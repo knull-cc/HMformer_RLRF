@@ -78,7 +78,7 @@ parser.add_argument('--kernel_size', type=int, default=25)
 
 # ===== 修改开始：新增 loss_mode 和静态加权参数，baseline 分支继续使用原始 loss_func =====
 parser.add_argument('--loss_func', type=str, default='mse')
-parser.add_argument('--loss_mode', type=str, default='baseline',
+parser.add_argument('--loss_mode', type=str, default='point',
                     choices=['baseline', 'point', 'point_direction', 'point_direction_trend'])
 parser.add_argument('--lambda_p', type=float, default=1.0)
 parser.add_argument('--lambda_d', type=float, default=1.0)
@@ -217,6 +217,10 @@ for ii in range(args.itr):
     print("======================================")
     # ===== 修改结束：打印当前实验配置，明确展示模型、设备、数据长度和 loss 选择 =====
 
+    # ===== 修改开始：记录是否已经打印首个 batch shape，用于确认多变量输入是否生效 =====
+    shape_logged = False
+    # ===== 修改结束：记录是否已经打印首个 batch shape，用于确认多变量输入是否生效 =====
+
     for epoch in range(args.train_epochs):
 
         iter_count = 0
@@ -238,10 +242,27 @@ for ii in range(args.itr):
             batch_x_mark = batch_x_mark.float().to(device)
             batch_y_mark = batch_y_mark.float().to(device)
             
+            # ===== 修改开始：保留裁剪前 batch_y shape，便于日志验证真实标签窗口长度 =====
+            raw_batch_y_shape = tuple(batch_y.shape)
+            # ===== 修改结束：保留裁剪前 batch_y shape，便于日志验证真实标签窗口长度 =====
             outputs = model(batch_x, ii)
+            # ===== 修改开始：保留裁剪前 outputs shape，便于日志验证模型原始输出维度 =====
+            raw_outputs_shape = tuple(outputs.shape)
+            # ===== 修改结束：保留裁剪前 outputs shape，便于日志验证模型原始输出维度 =====
 
             outputs = outputs[:, -args.pred_len:, :]
             batch_y = batch_y[:, -args.pred_len:, :].to(device)
+            # ===== 修改开始：首个 batch 打印输入输出 shape，确认是否为 [B, seq_len, enc_in] 多变量形式 =====
+            if not shape_logged:
+                print("shape check -> batch_x: {}, raw_batch_y: {}, raw_outputs: {}, cropped_outputs: {}, cropped_batch_y: {}".format(
+                    tuple(batch_x.shape),
+                    raw_batch_y_shape,
+                    raw_outputs_shape,
+                    tuple(outputs.shape),
+                    tuple(batch_y.shape)
+                ))
+                shape_logged = True
+            # ===== 修改结束：首个 batch 打印输入输出 shape，确认是否为 [B, seq_len, enc_in] 多变量形式 =====
             loss = criterion(outputs, batch_y)
             train_loss.append(loss.item())
 

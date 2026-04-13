@@ -8,9 +8,11 @@ loss_mode=${LOSS_MODE:-baseline}
 lambda_p=${LAMBDA_P:-1.0}
 lambda_d=${LAMBDA_D:-1.0}
 lambda_t=${LAMBDA_T:-1.0}
-train_epochs=${TRAIN_EPOCHS:-1}
-batch_size=${BATCH_SIZE:-32}
-num_workers=${NUM_WORKERS:-2}
+# ===== 修改开始：完整测试默认使用更充分的 epoch、更大的 batch 和更多数据加载进程 =====
+train_epochs=${TRAIN_EPOCHS:-10}
+batch_size=${BATCH_SIZE:-256}
+num_workers=${NUM_WORKERS:-8}
+# ===== 修改结束：完整测试默认使用更充分的 epoch、更大的 batch 和更多数据加载进程 =====
 log_interval=${LOG_INTERVAL:-50}
 # ===== 修改开始：Exchange 720 horizon 需要完整训练集窗口，避免 percent=10 导致 __len__ 为负 =====
 percent=${PERCENT:-100}
