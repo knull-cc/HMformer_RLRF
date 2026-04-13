@@ -58,6 +58,9 @@ parser.add_argument('--learning_rate', type=float, default=0.0001)
 parser.add_argument('--batch_size', type=int, default=512)
 parser.add_argument('--num_workers', type=int, default=10)
 parser.add_argument('--train_epochs', type=int, default=10)
+# ===== 修改开始：新增训练日志打印间隔，避免每 1000 iter 才显示一次 loss =====
+parser.add_argument('--log_interval', type=int, default=50)
+# ===== 修改结束：新增训练日志打印间隔，避免每 1000 iter 才显示一次 loss =====
 parser.add_argument('--lradj', type=str, default='type1')
 parser.add_argument('--patience', type=int, default=3)
 
@@ -102,6 +105,11 @@ parser.add_argument('--fusion', type=int, default=2)
 
 args = parser.parse_args()
 
+# ===== 修改开始：保护 log_interval，避免用户传 0 或负数导致取模报错 =====
+if args.log_interval <= 0:
+    args.log_interval = 1
+# ===== 修改结束：保护 log_interval，避免用户传 0 或负数导致取模报错 =====
+
 SEASONALITY_MAP = {
    "minutely": 1440,
    "10_minutes": 144,
@@ -113,6 +121,20 @@ SEASONALITY_MAP = {
    "quarterly": 4,
    "yearly": 1
 }
+
+# ===== 修改开始：新增 loss 日志格式化函数，用于展示 baseline 或多目标 loss 分项 =====
+def format_loss_log(loss, criterion, args):
+    if args.loss_mode == 'baseline':
+        return 'baseline_loss: {:.7f}'.format(loss.item())
+
+    last_losses = getattr(criterion, 'last_losses', {})
+    log_parts = ['total: {:.7f}'.format(loss.item())]
+    for loss_name in ['point', 'direction', 'trend']:
+        loss_value = last_losses.get(loss_name)
+        if loss_value is not None:
+            log_parts.append('{}: {:.7f}'.format(loss_name, loss_value.item()))
+    return ' | '.join(log_parts)
+# ===== 修改结束：新增 loss 日志格式化函数，用于展示 baseline 或多目标 loss 分项 =====
 
 mses = []
 maes = []
@@ -177,12 +199,36 @@ for ii in range(args.itr):
     
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(model_optim, T_max=args.tmax, eta_min=1e-8)
 
+    # ===== 修改开始：打印当前实验配置，明确展示模型、设备、数据长度和 loss 选择 =====
+    device_name = torch.cuda.get_device_name(device) if device.type == 'cuda' else 'CPU'
+    print("========== HMformer 实验配置 ==========")
+    print("setting: {}".format(setting))
+    print("device: {}".format(device_name))
+    print("model: {}".format(args.model))
+    print("data: {}, root_path: {}, data_path: {}".format(args.data, args.root_path, args.data_path))
+    print("seq_len: {}, label_len: {}, pred_len: {}".format(args.seq_len, args.label_len, args.pred_len))
+    print("batch_size: {}, train_epochs: {}, train_steps_per_epoch: {}".format(args.batch_size, args.train_epochs, train_steps))
+    print("loss_mode: {}".format(args.loss_mode))
+    if args.loss_mode == 'baseline':
+        print("baseline loss_func: {}".format(args.loss_func))
+    else:
+        print("loss weights -> lambda_p: {}, lambda_d: {}, lambda_t: {}".format(args.lambda_p, args.lambda_d, args.lambda_t))
+    print("log_interval: {}".format(args.log_interval))
+    print("======================================")
+    # ===== 修改结束：打印当前实验配置，明确展示模型、设备、数据长度和 loss 选择 =====
+
     for epoch in range(args.train_epochs):
 
         iter_count = 0
         train_loss = []
         epoch_time = time.time()
-        for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in tqdm(enumerate(train_loader)):
+        # ===== 修改开始：给 tqdm 增加 total 和 desc，让训练进度显示 x/y 与百分比 =====
+        for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in tqdm(
+            enumerate(train_loader),
+            total=train_steps,
+            desc='train epoch {}/{}'.format(epoch + 1, args.train_epochs)
+        ):
+        # ===== 修改结束：给 tqdm 增加 total 和 desc，让训练进度显示 x/y 与百分比 =====
 
             iter_count += 1
             model_optim.zero_grad()
@@ -199,13 +245,21 @@ for ii in range(args.itr):
             loss = criterion(outputs, batch_y)
             train_loss.append(loss.item())
 
-            if (i + 1) % 1000 == 0:
-                print("\titers: {0}, epoch: {1} | loss: {2:.7f}".format(i + 1, epoch + 1, loss.item()))
+            # ===== 修改开始：按 log_interval 打印 total/point/direction/trend，最后一个 step 也会打印 =====
+            should_log = (i + 1) % args.log_interval == 0 or (i + 1) == train_steps
+            if should_log:
+                tqdm.write("\titers: {0}/{1}, epoch: {2} | {3}".format(
+                    i + 1,
+                    train_steps,
+                    epoch + 1,
+                    format_loss_log(loss, criterion, args)
+                ))
                 speed = (time.time() - time_now) / iter_count
                 left_time = speed * ((args.train_epochs - epoch) * train_steps - i)
-                print('\tspeed: {:.4f}s/iter; left time: {:.4f}s'.format(speed, left_time))
+                tqdm.write('\tspeed: {:.4f}s/iter; left time: {:.4f}s'.format(speed, left_time))
                 iter_count = 0
                 time_now = time.time()
+            # ===== 修改结束：按 log_interval 打印 total/point/direction/trend，最后一个 step 也会打印 =====
             loss.backward()
             model_optim.step()
 

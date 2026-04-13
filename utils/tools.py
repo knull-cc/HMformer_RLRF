@@ -254,7 +254,13 @@ def vali(model, vali_data, vali_loader, criterion, args, device, itr):
     model.eval()
     # ===== 修改结束：只运行 HMformer，验证阶段直接切换整个模型到 eval 模式 =====
     with torch.no_grad():
-        for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in tqdm(enumerate(vali_loader)):
+        # ===== 修改开始：给验证阶段 tqdm 增加 total 和 desc，显示完整进度 =====
+        for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in tqdm(
+            enumerate(vali_loader),
+            total=len(vali_loader),
+            desc='vali'
+        ):
+        # ===== 修改结束：给验证阶段 tqdm 增加 total 和 desc，显示完整进度 =====
             batch_x = batch_x.float().to(device)
             batch_y = batch_y.float()
 
@@ -288,7 +294,13 @@ def test(model, test_data, test_loader, args, device, itr):
     nn=[]
     model.eval()
     with torch.no_grad():
-        for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in tqdm(enumerate(test_loader)):
+        # ===== 修改开始：给测试阶段 tqdm 增加 total 和 desc，显示完整进度 =====
+        for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in tqdm(
+            enumerate(test_loader),
+            total=len(test_loader),
+            desc='test'
+        ):
+        # ===== 修改结束：给测试阶段 tqdm 增加 total 和 desc，显示完整进度 =====
             # outputs_np = batch_x.cpu().numpy()
             # np.save("emb_test/ETTh2_192_test_input_itr{}_{}.npy".format(itr, i), outputs_np)
             # outputs_np = batch_y.cpu().numpy()

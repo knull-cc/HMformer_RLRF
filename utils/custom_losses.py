@@ -24,10 +24,17 @@ class MultiObjectiveLoss(nn.Module):
         self.lambda_t = lambda_t
         self.point_loss = nn.MSELoss()
         self.trend_loss = nn.MSELoss()
+        # ===== 修改开始：记录最近一次 loss 分项，便于训练日志展示 point、direction、trend =====
+        self.last_losses = {}
+        # ===== 修改结束：记录最近一次 loss 分项，便于训练日志展示 point、direction、trend =====
 
     def forward(self, pred, true):
         loss_point = self.point_loss(pred, true)
         total_loss = self.lambda_p * loss_point
+        # ===== 修改开始：初始化当前 batch 的 loss 分项记录，不影响 loss 反向传播 =====
+        loss_direction = None
+        loss_trend = None
+        # ===== 修改结束：初始化当前 batch 的 loss 分项记录，不影响 loss 反向传播 =====
 
         if self.loss_mode in ['point_direction', 'point_direction_trend']:
             pred_diff = pred[:, 1:, :] - pred[:, :-1, :]
@@ -41,5 +48,13 @@ class MultiObjectiveLoss(nn.Module):
                 loss_trend = self.trend_loss(pred_diff, true_diff)
                 total_loss = total_loss + self.lambda_t * loss_trend
 
+        # ===== 修改开始：保存 detached loss 分项供日志读取，不改变返回的 total_loss =====
+        self.last_losses = {
+            'total': total_loss.detach(),
+            'point': loss_point.detach(),
+            'direction': None if loss_direction is None else loss_direction.detach(),
+            'trend': None if loss_trend is None else loss_trend.detach()
+        }
+        # ===== 修改结束：保存 detached loss 分项供日志读取，不改变返回的 total_loss =====
         return total_loss
 # ===== 修改结束：新增最简多目标损失模块，支持 point、direction、trend 三类静态加权损失 =====
