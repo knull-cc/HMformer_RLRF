@@ -1,10 +1,33 @@
 from data_provider.data_factory import data_provider
 from utils.tools import EarlyStopping, adjust_learning_rate, visual, vali, test
+# ===== 修改开始：导入独立多目标损失模块，训练循环仍保持 criterion(pred, true) 接口 =====
+from utils.custom_losses import MultiObjectiveLoss
+# ===== 修改结束：导入独立多目标损失模块，训练循环仍保持 criterion(pred, true) 接口 =====
 from tqdm import tqdm
-from models.PatchTST import PatchTST
-from models.GPT4TS import GPT4TS
-from models.DLinear import DLinear
 from models.HMformer import HMformer
+
+# ===== 修改开始：将非 HMformer 模型改为可选导入，避免本仓库缺少文件时入口直接失败 =====
+try:
+    from models.PatchTST import PatchTST
+    PATCHTST_IMPORT_ERROR = None
+except ImportError as err:
+    PatchTST = None
+    PATCHTST_IMPORT_ERROR = err
+
+try:
+    from models.GPT4TS import GPT4TS
+    GPT4TS_IMPORT_ERROR = None
+except ImportError as err:
+    GPT4TS = None
+    GPT4TS_IMPORT_ERROR = err
+
+try:
+    from models.DLinear import DLinear
+    DLINEAR_IMPORT_ERROR = None
+except ImportError as err:
+    DLinear = None
+    DLINEAR_IMPORT_ERROR = err
+# ===== 修改结束：将非 HMformer 模型改为可选导入，避免本仓库缺少文件时入口直接失败 =====
 
 
 import numpy as np
@@ -67,10 +90,19 @@ parser.add_argument('--c_out', type=int, default=862)
 parser.add_argument('--patch_size', type=int, default=16)
 parser.add_argument('--kernel_size', type=int, default=25)
 
+# ===== 修改开始：新增 loss_mode 和静态加权参数，baseline 分支继续使用原始 loss_func =====
 parser.add_argument('--loss_func', type=str, default='mse')
+parser.add_argument('--loss_mode', type=str, default='baseline',
+                    choices=['baseline', 'point', 'point_direction', 'point_direction_trend'])
+parser.add_argument('--lambda_p', type=float, default=1.0)
+parser.add_argument('--lambda_d', type=float, default=1.0)
+parser.add_argument('--lambda_t', type=float, default=1.0)
+# ===== 修改结束：新增 loss_mode 和静态加权参数，baseline 分支继续使用原始 loss_func =====
 parser.add_argument('--pretrain', type=int, default=1)
 parser.add_argument('--freeze', type=int, default=1)
-parser.add_argument('--model', type=str, default='model')
+# ===== 修改开始：默认使用 HMformer，避免默认值落入当前缺失的 GPT4TS 分支 =====
+parser.add_argument('--model', type=str, default='HMformer')
+# ===== 修改结束：默认使用 HMformer，避免默认值落入当前缺失的 GPT4TS 分支 =====
 parser.add_argument('--stride', type=int, default=8)
 parser.add_argument('--max_len', type=int, default=-1)
 parser.add_argument('--hid_dim', type=int, default=16)
@@ -80,7 +112,9 @@ parser.add_argument('--itr', type=int, default=3)
 parser.add_argument('--cos', type=int, default=0)
 parser.add_argument('--ifatten', type=int, default=0)
 parser.add_argument('--fusion', type=int, default=2)
-parser.add_argument('--stride', type=int, default=8)
+# ===== 修改开始：删除重复 --stride 注册，避免 argparse 因重复参数直接报错 =====
+# 原代码在这里第二次注册 --stride；保留上方唯一的 --stride 参数定义。
+# ===== 修改结束：删除重复 --stride 注册，避免 argparse 因重复参数直接报错 =====
 
 
 args = parser.parse_args()
@@ -120,7 +154,9 @@ for ii in range(args.itr):
         args.freq = SEASONALITY_MAP[test_data.freq]
         print("freq = {}".format(args.freq))
 
-    device = torch.device('cuda:0')
+    # ===== 修改开始：自动选择 GPU 或 CPU，避免无 CUDA 环境下最小 demo 无法启动 =====
+    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+    # ===== 修改结束：自动选择 GPU 或 CPU，避免无 CUDA 环境下最小 demo 无法启动 =====
 
     time_now = time.time()
     train_steps = len(train_loader)
@@ -128,12 +164,24 @@ for ii in range(args.itr):
         model = HMformer(args, device)
         model.to(device)
     elif args.model == 'PatchTST':
+        # ===== 修改开始：仅在选择 PatchTST 时检查可选导入结果，不影响 HMformer demo =====
+        if PatchTST is None:
+            raise ImportError('PatchTST is unavailable: {}'.format(PATCHTST_IMPORT_ERROR))
+        # ===== 修改结束：仅在选择 PatchTST 时检查可选导入结果，不影响 HMformer demo =====
         model = PatchTST(args, device)
         model.to(device)
     elif args.model == 'DLinear':
+        # ===== 修改开始：仅在选择 DLinear 时检查可选导入结果，不影响 HMformer demo =====
+        if DLinear is None:
+            raise ImportError('DLinear is unavailable: {}'.format(DLINEAR_IMPORT_ERROR))
+        # ===== 修改结束：仅在选择 DLinear 时检查可选导入结果，不影响 HMformer demo =====
         model = DLinear(args, device)
         model.to(device)
     else:
+        # ===== 修改开始：仅在选择 GPT4TS 或旧默认兜底分支时检查可选导入结果，不影响 HMformer demo =====
+        if GPT4TS is None:
+            raise ImportError('GPT4TS is unavailable: {}'.format(GPT4TS_IMPORT_ERROR))
+        # ===== 修改结束：仅在选择 GPT4TS 或旧默认兜底分支时检查可选导入结果，不影响 HMformer demo =====
         model = GPT4TS(args, device)
     # mse, mae = test(model, test_data, test_loader, args, device, ii)
 
@@ -141,15 +189,27 @@ for ii in range(args.itr):
     model_optim = torch.optim.Adam(params, lr=args.learning_rate)
     
     early_stopping = EarlyStopping(patience=args.patience, verbose=True)
-    if args.loss_func == 'mse':
-        criterion = nn.MSELoss()
-    elif args.loss_func == 'smape':
-        class SMAPE(nn.Module):
-            def __init__(self):
-                super(SMAPE, self).__init__()
-            def forward(self, pred, true):
-                return torch.mean(200 * torch.abs(pred - true) / (torch.abs(pred) + torch.abs(true) + 1e-8))
-        criterion = SMAPE()
+    # ===== 修改开始：按 loss_mode 切换 baseline 原始损失或最简多目标静态加权损失 =====
+    if args.loss_mode == 'baseline':
+        if args.loss_func == 'mse':
+            criterion = nn.MSELoss()
+        elif args.loss_func == 'smape':
+            class SMAPE(nn.Module):
+                def __init__(self):
+                    super(SMAPE, self).__init__()
+                def forward(self, pred, true):
+                    return torch.mean(200 * torch.abs(pred - true) / (torch.abs(pred) + torch.abs(true) + 1e-8))
+            criterion = SMAPE()
+        else:
+            raise ValueError('baseline loss_func must be mse or smape, got {}'.format(args.loss_func))
+    else:
+        criterion = MultiObjectiveLoss(
+            loss_mode=args.loss_mode,
+            lambda_p=args.lambda_p,
+            lambda_d=args.lambda_d,
+            lambda_t=args.lambda_t
+        )
+    # ===== 修改结束：按 loss_mode 切换 baseline 原始损失或最简多目标静态加权损失 =====
     
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(model_optim, T_max=args.tmax, eta_min=1e-8)
 
