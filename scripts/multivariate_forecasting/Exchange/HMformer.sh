@@ -1,12 +1,16 @@
 # ===== 修改开始：新增 Exchange 多变量预测 HMformer 测试脚本，支持通过环境变量切换 loss 实验 =====
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
 
-model_name=HMformer
+# ===== 修改开始：只运行 HMformer，删除可切换模型名变量 =====
 loss_mode=${LOSS_MODE:-baseline}
+# ===== 修改结束：只运行 HMformer，删除可切换模型名变量 =====
 lambda_p=${LAMBDA_P:-1.0}
 lambda_d=${LAMBDA_D:-1.0}
 lambda_t=${LAMBDA_T:-1.0}
 train_epochs=${TRAIN_EPOCHS:-1}
+# ===== 修改开始：Exchange 720 horizon 需要完整训练集窗口，避免 percent=10 导致 __len__ 为负 =====
+percent=${PERCENT:-100}
+# ===== 修改结束：Exchange 720 horizon 需要完整训练集窗口，避免 percent=10 导致 __len__ 为负 =====
 
 run_exchange() {
   pred_len=$1
@@ -15,10 +19,11 @@ run_exchange() {
     --root_path ./dataset/exchange_rate/ \
     --data_path exchange_rate.csv \
     --model_id Exchange_96_${pred_len}_${loss_mode} \
-    --model $model_name \
+    --model HMformer \
     --data custom \
     --features M \
     --freq 0 \
+    --percent ${percent} \
     --seq_len 96 \
     --label_len 48 \
     --pred_len ${pred_len} \

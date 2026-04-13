@@ -47,7 +47,7 @@ class EarlyStopping:
         self.counter = 0
         self.best_score = None
         self.early_stop = False
-        self.val_loss_min = np.Inf
+        self.val_loss_min = np.inf
         self.delta = delta
 
     def __call__(self, val_loss, model, path):
@@ -250,11 +250,9 @@ def convert_tsf_to_dataframe(
 
 def vali(model, vali_data, vali_loader, criterion, args, device, itr):
     total_loss = []
-    if args.model == 'PatchTST' or args.model == 'DLinear' or args.model == 'TCN':
-        model.eval()
-    else:
-        model.in_layer.eval()
-        model.out_layer.eval()
+    # ===== 修改开始：只运行 HMformer，验证阶段直接切换整个模型到 eval 模式 =====
+    model.eval()
+    # ===== 修改结束：只运行 HMformer，验证阶段直接切换整个模型到 eval 模式 =====
     with torch.no_grad():
         for i, (batch_x, batch_y, batch_x_mark, batch_y_mark) in tqdm(enumerate(vali_loader)):
             batch_x = batch_x.float().to(device)
@@ -276,11 +274,9 @@ def vali(model, vali_data, vali_loader, criterion, args, device, itr):
 
             total_loss.append(loss)
     total_loss = np.average(total_loss)
-    if args.model == 'PatchTST' or args.model == 'DLinear' or args.model == 'TCN':
-        model.train()
-    else:
-        model.in_layer.train()
-        model.out_layer.train()
+    # ===== 修改开始：只运行 HMformer，验证结束后直接恢复整个模型到 train 模式 =====
+    model.train()
+    # ===== 修改结束：只运行 HMformer，验证结束后直接恢复整个模型到 train 模式 =====
     return total_loss
 
 def MASE(x, freq, pred, true):

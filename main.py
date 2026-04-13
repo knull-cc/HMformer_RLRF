@@ -6,28 +6,9 @@ from utils.custom_losses import MultiObjectiveLoss
 from tqdm import tqdm
 from models.HMformer import HMformer
 
-# ===== 修改开始：将非 HMformer 模型改为可选导入，避免本仓库缺少文件时入口直接失败 =====
-try:
-    from models.PatchTST import PatchTST
-    PATCHTST_IMPORT_ERROR = None
-except ImportError as err:
-    PatchTST = None
-    PATCHTST_IMPORT_ERROR = err
-
-try:
-    from models.GPT4TS import GPT4TS
-    GPT4TS_IMPORT_ERROR = None
-except ImportError as err:
-    GPT4TS = None
-    GPT4TS_IMPORT_ERROR = err
-
-try:
-    from models.DLinear import DLinear
-    DLINEAR_IMPORT_ERROR = None
-except ImportError as err:
-    DLinear = None
-    DLINEAR_IMPORT_ERROR = err
-# ===== 修改结束：将非 HMformer 模型改为可选导入，避免本仓库缺少文件时入口直接失败 =====
+# ===== 修改开始：删除非 HMformer 模型导入，当前入口只保留 HMformer =====
+# 当前最简 demo 只运行 HMformer，不再导入其他模型。
+# ===== 修改结束：删除非 HMformer 模型导入，当前入口只保留 HMformer =====
 
 
 import numpy as np
@@ -52,7 +33,9 @@ random.seed(fix_seed)
 torch.manual_seed(fix_seed)
 np.random.seed(fix_seed)
 
-parser = argparse.ArgumentParser(description='GPT4TS')
+# ===== 修改开始：入口描述改为 HMformer，避免保留其他模型名称造成误解 =====
+parser = argparse.ArgumentParser(description='HMformer')
+# ===== 修改结束：入口描述改为 HMformer，避免保留其他模型名称造成误解 =====
 
 parser.add_argument('--model_id', type=str, required=True, default='test')
 parser.add_argument('--checkpoints', type=str, default='./checkpoints/')
@@ -100,9 +83,9 @@ parser.add_argument('--lambda_t', type=float, default=1.0)
 # ===== 修改结束：新增 loss_mode 和静态加权参数，baseline 分支继续使用原始 loss_func =====
 parser.add_argument('--pretrain', type=int, default=1)
 parser.add_argument('--freeze', type=int, default=1)
-# ===== 修改开始：默认使用 HMformer，避免默认值落入当前缺失的 GPT4TS 分支 =====
-parser.add_argument('--model', type=str, default='HMformer')
-# ===== 修改结束：默认使用 HMformer，避免默认值落入当前缺失的 GPT4TS 分支 =====
+# ===== 修改开始：只允许选择 HMformer，避免误传其他模型名进入无效分支 =====
+parser.add_argument('--model', type=str, default='HMformer', choices=['HMformer'])
+# ===== 修改结束：只允许选择 HMformer，避免误传其他模型名进入无效分支 =====
 parser.add_argument('--stride', type=int, default=8)
 parser.add_argument('--max_len', type=int, default=-1)
 parser.add_argument('--hid_dim', type=int, default=16)
@@ -160,29 +143,10 @@ for ii in range(args.itr):
 
     time_now = time.time()
     train_steps = len(train_loader)
-    if args.model == 'HMformer':
-        model = HMformer(args, device)
-        model.to(device)
-    elif args.model == 'PatchTST':
-        # ===== 修改开始：仅在选择 PatchTST 时检查可选导入结果，不影响 HMformer demo =====
-        if PatchTST is None:
-            raise ImportError('PatchTST is unavailable: {}'.format(PATCHTST_IMPORT_ERROR))
-        # ===== 修改结束：仅在选择 PatchTST 时检查可选导入结果，不影响 HMformer demo =====
-        model = PatchTST(args, device)
-        model.to(device)
-    elif args.model == 'DLinear':
-        # ===== 修改开始：仅在选择 DLinear 时检查可选导入结果，不影响 HMformer demo =====
-        if DLinear is None:
-            raise ImportError('DLinear is unavailable: {}'.format(DLINEAR_IMPORT_ERROR))
-        # ===== 修改结束：仅在选择 DLinear 时检查可选导入结果，不影响 HMformer demo =====
-        model = DLinear(args, device)
-        model.to(device)
-    else:
-        # ===== 修改开始：仅在选择 GPT4TS 或旧默认兜底分支时检查可选导入结果，不影响 HMformer demo =====
-        if GPT4TS is None:
-            raise ImportError('GPT4TS is unavailable: {}'.format(GPT4TS_IMPORT_ERROR))
-        # ===== 修改结束：仅在选择 GPT4TS 或旧默认兜底分支时检查可选导入结果，不影响 HMformer demo =====
-        model = GPT4TS(args, device)
+    # ===== 修改开始：删除其他模型构造分支，当前训练入口只实例化 HMformer =====
+    model = HMformer(args, device)
+    model.to(device)
+    # ===== 修改结束：删除其他模型构造分支，当前训练入口只实例化 HMformer =====
     # mse, mae = test(model, test_data, test_loader, args, device, ii)
 
     params = model.parameters()
