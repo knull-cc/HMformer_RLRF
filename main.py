@@ -44,7 +44,9 @@ parser.add_argument('--root_path', type=str, default='./dataset/traffic/')
 parser.add_argument('--data_path', type=str, default='traffic.csv')
 parser.add_argument('--data', type=str, default='custom')
 parser.add_argument('--features', type=str, default='M')
-parser.add_argument('--freq', type=int, default=1)
+# ===== 修改开始：freq 改为字符串，支持 ETTm1 使用 t 分钟频率，同时兼容旧脚本 0 表示小时级 =====
+parser.add_argument('--freq', type=str, default='h')
+# ===== 修改结束：freq 改为字符串，支持 ETTm1 使用 t 分钟频率，同时兼容旧脚本 0 表示小时级 =====
 parser.add_argument('--target', type=str, default='OT')
 parser.add_argument('--embed', type=str, default='timeF')
 parser.add_argument('--percent', type=int, default=10)
@@ -148,16 +150,20 @@ for ii in range(args.itr):
     if not os.path.exists(path):
         os.makedirs(path)
 
-    if args.freq == 0:
+    # ===== 修改开始：兼容旧脚本传入 --freq 0，同时允许 ETTm1 传入 --freq t =====
+    if str(args.freq) == '0':
         args.freq = 'h'
+    # ===== 修改结束：兼容旧脚本传入 --freq 0，同时允许 ETTm1 传入 --freq t =====
 
     train_data, train_loader = data_provider(args, 'train')
     vali_data, vali_loader = data_provider(args, 'val')
     test_data, test_loader = data_provider(args, 'test')
 
-    if args.freq != 'h':
+    # ===== 修改开始：只对 tsf_data 应用季节周期映射，避免 ETTm1 的 t 频率被误查 SEASONALITY_MAP =====
+    if args.data == 'tsf_data' and args.freq != 'h':
         args.freq = SEASONALITY_MAP[test_data.freq]
         print("freq = {}".format(args.freq))
+    # ===== 修改结束：只对 tsf_data 应用季节周期映射，避免 ETTm1 的 t 频率被误查 SEASONALITY_MAP =====
 
     # ===== 修改开始：自动选择 GPU 或 CPU，避免无 CUDA 环境下最小 demo 无法启动 =====
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
