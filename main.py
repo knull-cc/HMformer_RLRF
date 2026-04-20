@@ -90,6 +90,12 @@ parser.add_argument('--lambda_b', type=float, default=0.1)
 parser.add_argument('--lambda_lag', type=float, default=0.05)
 parser.add_argument('--lag_k', type=int, default=3)
 parser.add_argument('--lag_tau', type=float, default=0.1)
+# ===== 修改开始：新增 feedback loss 的静态/动态权重模式参数 =====
+parser.add_argument('--weight_mode', type=str, default='static',
+                    choices=['static', 'dynamic_ema'])
+parser.add_argument('--ema_beta', type=float, default=0.9)
+parser.add_argument('--weight_tau', type=float, default=1.0)
+# ===== 修改结束：新增 feedback loss 的静态/动态权重模式参数 =====
 # ===== 修改结束：loss_mode 简化为 baseline/feedback，并新增完整反馈损失的静态权重参数 =====
 parser.add_argument('--pretrain', type=int, default=1)
 parser.add_argument('--freeze', type=int, default=1)
@@ -124,6 +130,15 @@ if args.lag_tau <= 0:
     args.lag_tau = 0.1
 # ===== 修改结束：保护 lag 参数，避免负 lag 或非正温度导致 feedback loss 数值异常 =====
 
+# ===== 修改开始：保护动态加权参数，避免 EMA 或 softmax 温度设置异常 =====
+if args.ema_beta < 0:
+    args.ema_beta = 0.0
+if args.ema_beta >= 1:
+    args.ema_beta = 0.999
+if args.weight_tau <= 0:
+    args.weight_tau = 1.0
+# ===== 修改结束：保护动态加权参数，避免 EMA 或 softmax 温度设置异常 =====
+
 SEASONALITY_MAP = {
    "minutely": 1440,
    "10_minutes": 144,
@@ -147,6 +162,17 @@ def format_loss_log(loss, criterion, args):
         loss_value = last_losses.get(loss_name)
         if loss_value is not None:
             log_parts.append('{}: {:.7f}'.format(loss_name, loss_value.item()))
+    # ===== 修改开始：dynamic_ema 模式下额外打印当前 batch 的有效权重，便于观察自适应加权行为 =====
+    if args.weight_mode == 'dynamic_ema':
+        last_weights = getattr(criterion, 'last_weights', {})
+        weight_parts = []
+        for loss_name in ['point', 'direction', 'trend', 'vol', 'bias', 'lag']:
+            weight_value = last_weights.get(loss_name)
+            if weight_value is not None and weight_value.item() > 0:
+                weight_parts.append('w_{}: {:.4f}'.format(loss_name, weight_value.item()))
+        if weight_parts:
+            log_parts.append('weights -> {}'.format(', '.join(weight_parts)))
+    # ===== 修改结束：dynamic_ema 模式下额外打印当前 batch 的有效权重，便于观察自适应加权行为 =====
     return ' | '.join(log_parts)
 # ===== 修改结束：更新 loss 日志格式化函数，用于展示 baseline 或 feedback 六类分项 =====
 
@@ -216,7 +242,10 @@ for ii in range(args.itr):
             lambda_b=args.lambda_b,
             lambda_lag=args.lambda_lag,
             lag_k=args.lag_k,
-            lag_tau=args.lag_tau
+            lag_tau=args.lag_tau,
+            weight_mode=args.weight_mode,
+            ema_beta=args.ema_beta,
+            weight_tau=args.weight_tau
         )
     # ===== 修改结束：按 loss_mode 切换 baseline 原始损失或完整 feedback 静态加权损失 =====
     
@@ -241,6 +270,11 @@ for ii in range(args.itr):
             args.lambda_p, args.lambda_d, args.lambda_t, args.lambda_v, args.lambda_b, args.lambda_lag
         ))
         print("lag config -> lag_k: {}, lag_tau: {}".format(args.lag_k, args.lag_tau))
+        # ===== 修改开始：打印 feedback 权重模式和 batch EMA 动态加权配置 =====
+        print("weight_mode: {}".format(args.weight_mode))
+        if args.weight_mode == 'dynamic_ema':
+            print("dynamic config -> ema_beta: {}, weight_tau: {}".format(args.ema_beta, args.weight_tau))
+        # ===== 修改结束：打印 feedback 权重模式和 batch EMA 动态加权配置 =====
         # ===== 修改结束：打印完整 feedback loss 的六类权重和 soft lag 配置 =====
     print("log_interval: {}".format(args.log_interval))
     print("======================================")

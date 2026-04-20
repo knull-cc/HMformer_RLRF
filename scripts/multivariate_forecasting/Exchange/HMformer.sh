@@ -14,6 +14,16 @@ lambda_b=${LAMBDA_B:-0.1}
 lambda_lag=${LAMBDA_LAG:-0.05}
 lag_k=${LAG_K:-3}
 lag_tau=${LAG_TAU:-0.1}
+# ===== 修改开始：新增 feedback 静态/动态加权模式配置 =====
+weight_mode=${WEIGHT_MODE:-static}
+ema_beta=${EMA_BETA:-0.9}
+weight_tau=${WEIGHT_TAU:-1.0}
+if [ "${loss_mode}" = "baseline" ]; then
+  exp_suffix=${loss_mode}
+else
+  exp_suffix=${loss_mode}_${weight_mode}
+fi
+# ===== 修改结束：新增 feedback 静态/动态加权模式配置 =====
 # ===== 修改结束：新增 feedback 完整损失的 vol、bias、lag 权重和 soft lag 配置 =====
 # ===== 修改开始：完整测试默认使用更充分的 epoch、更大的 batch 和更多数据加载进程 =====
 train_epochs=${TRAIN_EPOCHS:-10}
@@ -33,6 +43,10 @@ echo "LOSS_MODE=${loss_mode}"
 echo "LAMBDA_P=${lambda_p}, LAMBDA_D=${lambda_d}, LAMBDA_T=${lambda_t}"
 echo "LAMBDA_V=${lambda_v}, LAMBDA_B=${lambda_b}, LAMBDA_LAG=${lambda_lag}"
 echo "LAG_K=${lag_k}, LAG_TAU=${lag_tau}"
+# ===== 修改开始：打印 feedback 静态/动态加权模式配置 =====
+echo "WEIGHT_MODE=${weight_mode}, EMA_BETA=${ema_beta}, WEIGHT_TAU=${weight_tau}"
+echo "EXP_SUFFIX=${exp_suffix}"
+# ===== 修改结束：打印 feedback 静态/动态加权模式配置 =====
 # ===== 修改结束：打印 feedback 完整损失的六类权重和 soft lag 配置 =====
 echo "TRAIN_EPOCHS=${train_epochs}, BATCH_SIZE=${batch_size}, NUM_WORKERS=${num_workers}"
 echo "PERCENT=${percent}, LOG_INTERVAL=${log_interval}"
@@ -44,14 +58,14 @@ run_exchange() {
   pred_len=$1
 
   # ===== 修改开始：每个 horizon 开始前打印当前运行任务，便于对应日志和结果 =====
-  echo "---------- start Exchange_96_${pred_len}_${loss_mode} ----------"
+  echo "---------- start Exchange_96_${pred_len}_${exp_suffix} ----------"
   # ===== 修改结束：每个 horizon 开始前打印当前运行任务，便于对应日志和结果 =====
 
   # ===== 修改开始：调用 main.py 时传入 feedback 完整损失参数 =====
   python -u main.py \
     --root_path ./dataset/exchange_rate/ \
     --data_path exchange_rate.csv \
-    --model_id Exchange_96_${pred_len}_${loss_mode} \
+    --model_id Exchange_96_${pred_len}_${exp_suffix} \
     --model HMformer \
     --data custom \
     --features M \
@@ -78,12 +92,15 @@ run_exchange() {
     --lambda_b ${lambda_b} \
     --lambda_lag ${lambda_lag} \
     --lag_k ${lag_k} \
-    --lag_tau ${lag_tau}
+    --lag_tau ${lag_tau} \
+    --weight_mode ${weight_mode} \
+    --ema_beta ${ema_beta} \
+    --weight_tau ${weight_tau}
 
   # ===== 修改结束：调用 main.py 时传入 feedback 完整损失参数 =====
 
   # ===== 修改开始：每个 horizon 结束后打印完成提示，便于区分连续四个实验 =====
-  echo "---------- done Exchange_96_${pred_len}_${loss_mode} ----------"
+  echo "---------- done Exchange_96_${pred_len}_${exp_suffix} ----------"
   # ===== 修改结束：每个 horizon 结束后打印完成提示，便于区分连续四个实验 =====
 }
 
