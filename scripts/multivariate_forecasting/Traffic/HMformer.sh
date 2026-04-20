@@ -1,5 +1,8 @@
 # ===== 修改开始：新增 Traffic 多变量预测 HMformer 测试脚本，支持通过环境变量切换 loss 实验 =====
 set -e
+# ===== 修改开始：开启 pipefail，确保 tee 同步日志时 main.py 失败会让脚本退出 =====
+set -o pipefail
+# ===== 修改结束：开启 pipefail，确保 tee 同步日志时 main.py 失败会让脚本退出 =====
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
 
 # ===== 修改开始：只运行 HMformer，loss_mode 通过环境变量切换 =====
@@ -53,6 +56,48 @@ echo "pred_len list: 96 192 336 720"
 echo "=============================================="
 # ===== 修改结束：打印脚本级实验配置，明确当前 Traffic 实验选择 =====
 
+# ===== 修改开始：新增 horizon 结果缓存和等权平均打印函数，只解析日志不写 CSV =====
+result_pred_lens=()
+result_mses=()
+result_maes=()
+
+record_result() {
+  pred_len=$1
+  log_file=$2
+  result_line=$(grep -E 'mae:[0-9.eE+-]+, mse:[0-9.eE+-]+' "${log_file}" | tail -n 1 || true)
+  if [ -z "${result_line}" ]; then
+    echo "WARNING: pred_len=${pred_len} 未解析到 mae/mse，跳过平均汇总。"
+    return 0
+  fi
+
+  mae=$(echo "${result_line}" | sed -E 's/.*mae:([0-9.eE+-]+), mse:([0-9.eE+-]+).*/\1/')
+  mse=$(echo "${result_line}" | sed -E 's/.*mae:([0-9.eE+-]+), mse:([0-9.eE+-]+).*/\2/')
+  result_pred_lens+=("${pred_len}")
+  result_mses+=("${mse}")
+  result_maes+=("${mae}")
+}
+
+print_average_results() {
+  if [ ${#result_mses[@]} -eq 0 ]; then
+    echo "========== HMformer 四个预测长度等权平均结果 =========="
+    echo "未解析到任何 mse/mae 结果，无法计算平均值。"
+    echo "======================================================"
+    return 0
+  fi
+
+  echo "========== HMformer 四个预测长度等权平均结果 =========="
+  for idx in "${!result_pred_lens[@]}"; do
+    printf 'pred_len: %-4s | mse: %.4f | mae: %.4f\n' "${result_pred_lens[$idx]}" "${result_mses[$idx]}" "${result_maes[$idx]}"
+  done
+  echo "------------------------------------------------------"
+  avg_mse=$(printf '%s\n' "${result_mses[@]}" | awk '{sum += $1} END {if (NR > 0) printf "%.4f", sum / NR}')
+  avg_mae=$(printf '%s\n' "${result_maes[@]}" | awk '{sum += $1} END {if (NR > 0) printf "%.4f", sum / NR}')
+  echo "Average MSE: ${avg_mse}"
+  echo "Average MAE: ${avg_mae}"
+  echo "======================================================"
+}
+# ===== 修改结束：新增 horizon 结果缓存和等权平均打印函数，只解析日志不写 CSV =====
+
 run_traffic() {
   pred_len=$1
 
@@ -60,7 +105,8 @@ run_traffic() {
   echo "---------- start traffic_96_${pred_len}_${exp_suffix} ----------"
   # ===== 修改结束：每个 horizon 开始前打印当前 Traffic 运行任务，便于对应日志和结果 =====
 
-  # ===== 修改开始：调用 main.py 时传入 feedback 完整损失参数 =====
+  # ===== 修改开始：调用 main.py 时传入 feedback 完整损失参数，并同步捕获日志用于平均值汇总 =====
+  run_log=$(mktemp)
   python -u main.py \
     --root_path ./dataset/traffic/ \
     --data_path traffic.csv \
@@ -95,9 +141,11 @@ run_traffic() {
     --lag_tau ${lag_tau} \
     --weight_mode ${weight_mode} \
     --ema_beta ${ema_beta} \
-    --weight_tau ${weight_tau}
+    --weight_tau ${weight_tau} 2>&1 | tee "${run_log}"
+  record_result "${pred_len}" "${run_log}"
+  rm -f "${run_log}"
 
-  # ===== 修改结束：调用 main.py 时传入 feedback 完整损失参数 =====
+  # ===== 修改结束：调用 main.py 时传入 feedback 完整损失参数，并同步捕获日志用于平均值汇总 =====
 
   # ===== 修改开始：每个 horizon 结束后打印完成提示，便于区分连续四个 Traffic 实验 =====
   echo "---------- done traffic_96_${pred_len}_${exp_suffix} ----------"
@@ -108,4 +156,7 @@ run_traffic 96
 run_traffic 192
 run_traffic 336
 run_traffic 720
+# ===== 修改开始：四个 horizon 全部完成后打印等权平均 MSE/MAE =====
+print_average_results
+# ===== 修改结束：四个 horizon 全部完成后打印等权平均 MSE/MAE =====
 # ===== 修改结束：新增 Traffic 多变量预测 HMformer 测试脚本，支持通过环境变量切换 loss 实验 =====
