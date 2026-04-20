@@ -78,14 +78,19 @@ parser.add_argument('--c_out', type=int, default=862)
 parser.add_argument('--patch_size', type=int, default=16)
 parser.add_argument('--kernel_size', type=int, default=25)
 
-# ===== 修改开始：新增 loss_mode 和静态加权参数，baseline 分支继续使用原始 loss_func =====
+# ===== 修改开始：loss_mode 简化为 baseline/feedback，并新增完整反馈损失的静态权重参数 =====
 parser.add_argument('--loss_func', type=str, default='mse')
-parser.add_argument('--loss_mode', type=str, default='point',
-                    choices=['baseline', 'point', 'point_direction', 'point_direction_trend'])
+parser.add_argument('--loss_mode', type=str, default='baseline',
+                    choices=['baseline', 'feedback'])
 parser.add_argument('--lambda_p', type=float, default=1.0)
-parser.add_argument('--lambda_d', type=float, default=1.0)
-parser.add_argument('--lambda_t', type=float, default=1.0)
-# ===== 修改结束：新增 loss_mode 和静态加权参数，baseline 分支继续使用原始 loss_func =====
+parser.add_argument('--lambda_d', type=float, default=0.1)
+parser.add_argument('--lambda_t', type=float, default=0.5)
+parser.add_argument('--lambda_v', type=float, default=0.1)
+parser.add_argument('--lambda_b', type=float, default=0.1)
+parser.add_argument('--lambda_lag', type=float, default=0.05)
+parser.add_argument('--lag_k', type=int, default=3)
+parser.add_argument('--lag_tau', type=float, default=0.1)
+# ===== 修改结束：loss_mode 简化为 baseline/feedback，并新增完整反馈损失的静态权重参数 =====
 parser.add_argument('--pretrain', type=int, default=1)
 parser.add_argument('--freeze', type=int, default=1)
 # ===== 修改开始：只允许选择 HMformer，避免误传其他模型名进入无效分支 =====
@@ -112,6 +117,13 @@ if args.log_interval <= 0:
     args.log_interval = 1
 # ===== 修改结束：保护 log_interval，避免用户传 0 或负数导致取模报错 =====
 
+# ===== 修改开始：保护 lag 参数，避免负 lag 或非正温度导致 feedback loss 数值异常 =====
+if args.lag_k < 0:
+    args.lag_k = 0
+if args.lag_tau <= 0:
+    args.lag_tau = 0.1
+# ===== 修改结束：保护 lag 参数，避免负 lag 或非正温度导致 feedback loss 数值异常 =====
+
 SEASONALITY_MAP = {
    "minutely": 1440,
    "10_minutes": 144,
@@ -124,19 +136,19 @@ SEASONALITY_MAP = {
    "yearly": 1
 }
 
-# ===== 修改开始：新增 loss 日志格式化函数，用于展示 baseline 或多目标 loss 分项 =====
+# ===== 修改开始：更新 loss 日志格式化函数，用于展示 baseline 或 feedback 六类分项 =====
 def format_loss_log(loss, criterion, args):
     if args.loss_mode == 'baseline':
         return 'baseline_loss: {:.7f}'.format(loss.item())
 
     last_losses = getattr(criterion, 'last_losses', {})
     log_parts = ['total: {:.7f}'.format(loss.item())]
-    for loss_name in ['point', 'direction', 'trend']:
+    for loss_name in ['point', 'direction', 'trend', 'vol', 'bias', 'lag']:
         loss_value = last_losses.get(loss_name)
         if loss_value is not None:
             log_parts.append('{}: {:.7f}'.format(loss_name, loss_value.item()))
     return ' | '.join(log_parts)
-# ===== 修改结束：新增 loss 日志格式化函数，用于展示 baseline 或多目标 loss 分项 =====
+# ===== 修改结束：更新 loss 日志格式化函数，用于展示 baseline 或 feedback 六类分项 =====
 
 mses = []
 maes = []
@@ -181,7 +193,7 @@ for ii in range(args.itr):
     model_optim = torch.optim.Adam(params, lr=args.learning_rate)
     
     early_stopping = EarlyStopping(patience=args.patience, verbose=True)
-    # ===== 修改开始：按 loss_mode 切换 baseline 原始损失或最简多目标静态加权损失 =====
+    # ===== 修改开始：按 loss_mode 切换 baseline 原始损失或完整 feedback 静态加权损失 =====
     if args.loss_mode == 'baseline':
         if args.loss_func == 'mse':
             criterion = nn.MSELoss()
@@ -199,9 +211,14 @@ for ii in range(args.itr):
             loss_mode=args.loss_mode,
             lambda_p=args.lambda_p,
             lambda_d=args.lambda_d,
-            lambda_t=args.lambda_t
+            lambda_t=args.lambda_t,
+            lambda_v=args.lambda_v,
+            lambda_b=args.lambda_b,
+            lambda_lag=args.lambda_lag,
+            lag_k=args.lag_k,
+            lag_tau=args.lag_tau
         )
-    # ===== 修改结束：按 loss_mode 切换 baseline 原始损失或最简多目标静态加权损失 =====
+    # ===== 修改结束：按 loss_mode 切换 baseline 原始损失或完整 feedback 静态加权损失 =====
     
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(model_optim, T_max=args.tmax, eta_min=1e-8)
 
@@ -218,7 +235,13 @@ for ii in range(args.itr):
     if args.loss_mode == 'baseline':
         print("baseline loss_func: {}".format(args.loss_func))
     else:
-        print("loss weights -> lambda_p: {}, lambda_d: {}, lambda_t: {}".format(args.lambda_p, args.lambda_d, args.lambda_t))
+        # ===== 修改开始：打印完整 feedback loss 的六类权重和 soft lag 配置 =====
+        print("feedback loss: point + direction + trend + vol + bias + lag")
+        print("loss weights -> lambda_p: {}, lambda_d: {}, lambda_t: {}, lambda_v: {}, lambda_b: {}, lambda_lag: {}".format(
+            args.lambda_p, args.lambda_d, args.lambda_t, args.lambda_v, args.lambda_b, args.lambda_lag
+        ))
+        print("lag config -> lag_k: {}, lag_tau: {}".format(args.lag_k, args.lag_tau))
+        # ===== 修改结束：打印完整 feedback loss 的六类权重和 soft lag 配置 =====
     print("log_interval: {}".format(args.log_interval))
     print("======================================")
     # ===== 修改结束：打印当前实验配置，明确展示模型、设备、数据长度和 loss 选择 =====
@@ -272,7 +295,7 @@ for ii in range(args.itr):
             loss = criterion(outputs, batch_y)
             train_loss.append(loss.item())
 
-            # ===== 修改开始：按 log_interval 打印 total/point/direction/trend，最后一个 step 也会打印 =====
+            # ===== 修改开始：按 log_interval 打印 total/point/direction/trend/vol/bias/lag，最后一个 step 也会打印 =====
             should_log = (i + 1) % args.log_interval == 0 or (i + 1) == train_steps
             if should_log:
                 tqdm.write("\titers: {0}/{1}, epoch: {2} | {3}".format(
@@ -286,7 +309,7 @@ for ii in range(args.itr):
                 tqdm.write('\tspeed: {:.4f}s/iter; left time: {:.4f}s'.format(speed, left_time))
                 iter_count = 0
                 time_now = time.time()
-            # ===== 修改结束：按 log_interval 打印 total/point/direction/trend，最后一个 step 也会打印 =====
+            # ===== 修改结束：按 log_interval 打印 total/point/direction/trend/vol/bias/lag，最后一个 step 也会打印 =====
             loss.backward()
             model_optim.step()
 

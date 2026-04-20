@@ -5,9 +5,16 @@ export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
 # ===== 修改开始：只运行 HMformer，loss_mode 通过环境变量切换 =====
 loss_mode=${LOSS_MODE:-baseline}
 # ===== 修改结束：只运行 HMformer，loss_mode 通过环境变量切换 =====
+# ===== 修改开始：新增 feedback 完整损失的 vol、bias、lag 权重和 soft lag 配置 =====
 lambda_p=${LAMBDA_P:-1.0}
-lambda_d=${LAMBDA_D:-1.0}
-lambda_t=${LAMBDA_T:-1.0}
+lambda_d=${LAMBDA_D:-0.1}
+lambda_t=${LAMBDA_T:-0.5}
+lambda_v=${LAMBDA_V:-0.1}
+lambda_b=${LAMBDA_B:-0.1}
+lambda_lag=${LAMBDA_LAG:-0.05}
+lag_k=${LAG_K:-3}
+lag_tau=${LAG_TAU:-0.1}
+# ===== 修改结束：新增 feedback 完整损失的 vol、bias、lag 权重和 soft lag 配置 =====
 # ===== 修改开始：ECL 维度较高，默认沿用参考脚本 batch_size=16 和 learning_rate=0.0005 =====
 train_epochs=${TRAIN_EPOCHS:-10}
 batch_size=${BATCH_SIZE:-16}
@@ -21,7 +28,11 @@ percent=${PERCENT:-100}
 echo "========== HMformer ECL 脚本配置 =========="
 echo "CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES}"
 echo "LOSS_MODE=${loss_mode}"
+# ===== 修改开始：打印 feedback 完整损失的六类权重和 soft lag 配置 =====
 echo "LAMBDA_P=${lambda_p}, LAMBDA_D=${lambda_d}, LAMBDA_T=${lambda_t}"
+echo "LAMBDA_V=${lambda_v}, LAMBDA_B=${lambda_b}, LAMBDA_LAG=${lambda_lag}"
+echo "LAG_K=${lag_k}, LAG_TAU=${lag_tau}"
+# ===== 修改结束：打印 feedback 完整损失的六类权重和 soft lag 配置 =====
 echo "TRAIN_EPOCHS=${train_epochs}, BATCH_SIZE=${batch_size}, NUM_WORKERS=${num_workers}"
 echo "LEARNING_RATE=${learning_rate}, PERCENT=${percent}, LOG_INTERVAL=${log_interval}"
 echo "pred_len list: 96 192 336 720"
@@ -35,6 +46,7 @@ run_ecl() {
   echo "---------- start ECL_96_${pred_len}_${loss_mode} ----------"
   # ===== 修改结束：每个 horizon 开始前打印当前 ECL 运行任务，便于对应日志和结果 =====
 
+  # ===== 修改开始：调用 main.py 时传入 feedback 完整损失参数 =====
   python -u main.py \
     --root_path ./dataset/electricity/ \
     --data_path electricity.csv \
@@ -61,7 +73,14 @@ run_ecl() {
     --loss_mode ${loss_mode} \
     --lambda_p ${lambda_p} \
     --lambda_d ${lambda_d} \
-    --lambda_t ${lambda_t}
+    --lambda_t ${lambda_t} \
+    --lambda_v ${lambda_v} \
+    --lambda_b ${lambda_b} \
+    --lambda_lag ${lambda_lag} \
+    --lag_k ${lag_k} \
+    --lag_tau ${lag_tau}
+
+  # ===== 修改结束：调用 main.py 时传入 feedback 完整损失参数 =====
 
   # ===== 修改开始：每个 horizon 结束后打印完成提示，便于区分连续四个 ECL 实验 =====
   echo "---------- done ECL_96_${pred_len}_${loss_mode} ----------"
