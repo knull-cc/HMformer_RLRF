@@ -8,6 +8,13 @@ export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
 # ===== 修改开始：只运行 HMformer，loss_mode 通过环境变量切换 =====
 loss_mode=${LOSS_MODE:-baseline}
 # ===== 修改结束：只运行 HMformer，loss_mode 通过环境变量切换 =====
+# ===== 修改开始：新增自蒸馏环境变量，支持直接关闭或加载离线 teacher =====
+distill_mode=${DISTILL_MODE:-none}
+teacher_path=${TEACHER_PATH:-}
+teacher_path_template=${TEACHER_PATH_TEMPLATE:-}
+distill_alpha=${DISTILL_ALPHA:-0.1}
+distill_start_epoch=${DISTILL_START_EPOCH:-1}
+# ===== 修改结束：新增自蒸馏环境变量，支持直接关闭或加载离线 teacher =====
 # ===== 修改开始：新增 feedback 完整损失的 vol、bias、lag 权重和 soft lag 配置 =====
 lambda_p=${LAMBDA_P:-1.0}
 lambda_d=${LAMBDA_D:-0.1}
@@ -26,6 +33,12 @@ if [ "${loss_mode}" = "baseline" ]; then
 else
   exp_suffix=${loss_mode}_${weight_mode}
 fi
+# ===== 修改开始：为蒸馏实验追加独立后缀，避免和非蒸馏 checkpoint 混淆 =====
+if [ "${distill_mode}" != "none" ]; then
+  distill_alpha_tag=$(printf '%s' "${distill_alpha}" | tr '.' 'p')
+  exp_suffix=${exp_suffix}_${distill_mode}_da${distill_alpha_tag}
+fi
+# ===== 修改结束：为蒸馏实验追加独立后缀，避免和非蒸馏 checkpoint 混淆 =====
 # ===== 修改结束：新增 feedback 静态/动态加权模式配置 =====
 # ===== 修改结束：新增 feedback 完整损失的 vol、bias、lag 权重和 soft lag 配置 =====
 # ===== 修改开始：ECL 维度较高，默认沿用参考脚本 batch_size=16 和 learning_rate=0.0005 =====
@@ -48,6 +61,11 @@ echo "LAG_K=${lag_k}, LAG_TAU=${lag_tau}"
 # ===== 修改开始：打印 feedback 静态/动态加权模式配置 =====
 echo "WEIGHT_MODE=${weight_mode}, EMA_BETA=${ema_beta}, WEIGHT_TAU=${weight_tau}"
 echo "EXP_SUFFIX=${exp_suffix}"
+# ===== 修改开始：打印蒸馏配置，便于平滑区分蒸馏与非蒸馏实验 =====
+echo "DISTILL_MODE=${distill_mode}, DISTILL_ALPHA=${distill_alpha}, DISTILL_START_EPOCH=${distill_start_epoch}"
+echo "TEACHER_PATH=${teacher_path}"
+echo "TEACHER_PATH_TEMPLATE=${teacher_path_template}"
+# ===== 修改结束：打印蒸馏配置，便于平滑区分蒸馏与非蒸馏实验 =====
 # ===== 修改结束：打印 feedback 静态/动态加权模式配置 =====
 # ===== 修改结束：打印 feedback 完整损失的六类权重和 soft lag 配置 =====
 echo "TRAIN_EPOCHS=${train_epochs}, BATCH_SIZE=${batch_size}, NUM_WORKERS=${num_workers}"
@@ -55,6 +73,13 @@ echo "LEARNING_RATE=${learning_rate}, PERCENT=${percent}, LOG_INTERVAL=${log_int
 echo "pred_len list: 96 192 336 720"
 echo "=========================================="
 # ===== 修改结束：打印脚本级实验配置，明确当前 ECL 实验选择 =====
+
+# ===== 修改开始：蒸馏模式下校验 teacher 路径输入，避免 main.py 运行到中途才报错 =====
+if [ "${distill_mode}" != "none" ] && [ -z "${teacher_path}" ] && [ -z "${teacher_path_template}" ]; then
+  echo "ERROR: DISTILL_MODE=${distill_mode} 但 TEACHER_PATH 和 TEACHER_PATH_TEMPLATE 都为空。"
+  exit 1
+fi
+# ===== 修改结束：蒸馏模式下校验 teacher 路径输入，避免 main.py 运行到中途才报错 =====
 
 # ===== 修改开始：新增 horizon 结果缓存和等权平均打印函数，只解析日志不写 CSV =====
 result_pred_lens=()
@@ -105,6 +130,13 @@ run_ecl() {
   echo "---------- start ECL_96_${pred_len}_${exp_suffix} ----------"
   # ===== 修改结束：每个 horizon 开始前打印当前 ECL 运行任务，便于对应日志和结果 =====
 
+  # ===== 修改开始：按 pred_len 解析当前 horizon 的 teacher checkpoint 路径，支持单一路径或模板路径 =====
+  run_teacher_path=${teacher_path}
+  if [ -n "${teacher_path_template}" ]; then
+    run_teacher_path=${teacher_path_template//\{pred_len\}/${pred_len}}
+  fi
+  # ===== 修改结束：按 pred_len 解析当前 horizon 的 teacher checkpoint 路径，支持单一路径或模板路径 =====
+
   # ===== 修改开始：调用 main.py 时传入 feedback 完整损失参数，并同步捕获日志用于平均值汇总 =====
   run_log=$(mktemp)
   python -u main.py \
@@ -141,7 +173,11 @@ run_ecl() {
     --lag_tau ${lag_tau} \
     --weight_mode ${weight_mode} \
     --ema_beta ${ema_beta} \
-    --weight_tau ${weight_tau} 2>&1 | tee "${run_log}"
+    --weight_tau ${weight_tau} \
+    --distill_mode ${distill_mode} \
+    --teacher_path "${run_teacher_path}" \
+    --distill_alpha ${distill_alpha} \
+    --distill_start_epoch ${distill_start_epoch} 2>&1 | tee "${run_log}"
   record_result "${pred_len}" "${run_log}"
   rm -f "${run_log}"
 

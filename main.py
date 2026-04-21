@@ -96,6 +96,13 @@ parser.add_argument('--weight_mode', type=str, default='static',
 parser.add_argument('--ema_beta', type=float, default=0.9)
 parser.add_argument('--weight_tau', type=float, default=1.0)
 # ===== 修改结束：新增 feedback loss 的静态/动态权重模式参数 =====
+# ===== 修改开始：新增最小离线输出级自蒸馏参数，支持 none/offline 平滑切换 =====
+parser.add_argument('--distill_mode', type=str, default='none',
+                    choices=['none', 'offline'])
+parser.add_argument('--teacher_path', type=str, default='')
+parser.add_argument('--distill_alpha', type=float, default=0.1)
+parser.add_argument('--distill_start_epoch', type=int, default=1)
+# ===== 修改结束：新增最小离线输出级自蒸馏参数，支持 none/offline 平滑切换 =====
 # ===== 修改结束：loss_mode 简化为 baseline/feedback，并新增完整反馈损失的静态权重参数 =====
 parser.add_argument('--pretrain', type=int, default=1)
 parser.add_argument('--freeze', type=int, default=1)
@@ -139,6 +146,13 @@ if args.weight_tau <= 0:
     args.weight_tau = 1.0
 # ===== 修改结束：保护动态加权参数，避免 EMA 或 softmax 温度设置异常 =====
 
+# ===== 修改开始：保护蒸馏参数，避免负蒸馏权重和非法起始 epoch =====
+if args.distill_alpha < 0:
+    args.distill_alpha = 0.0
+if args.distill_start_epoch < 1:
+    args.distill_start_epoch = 1
+# ===== 修改结束：保护蒸馏参数，避免负蒸馏权重和非法起始 epoch =====
+
 SEASONALITY_MAP = {
    "minutely": 1440,
    "10_minutes": 144,
@@ -151,13 +165,22 @@ SEASONALITY_MAP = {
    "yearly": 1
 }
 
-# ===== 修改开始：更新 loss 日志格式化函数，用于展示 baseline 或 feedback 六类分项 =====
-def format_loss_log(loss, criterion, args):
+# ===== 修改开始：更新训练日志格式化函数，支持展示监督损失与蒸馏损失 =====
+def format_loss_log(total_loss, supervised_loss, criterion, args, distill_loss=None):
     if args.loss_mode == 'baseline':
-        return 'baseline_loss: {:.7f}'.format(loss.item())
+        if distill_loss is None:
+            return 'baseline_loss: {:.7f}'.format(total_loss.item())
+        return 'total: {:.7f} | supervised: {:.7f} | distill: {:.7f}'.format(
+            total_loss.item(),
+            supervised_loss.item(),
+            distill_loss.item()
+        )
 
     last_losses = getattr(criterion, 'last_losses', {})
-    log_parts = ['total: {:.7f}'.format(loss.item())]
+    log_parts = ['total: {:.7f}'.format(total_loss.item())]
+    if distill_loss is not None:
+        log_parts.append('supervised: {:.7f}'.format(supervised_loss.item()))
+        log_parts.append('distill: {:.7f}'.format(distill_loss.item()))
     for loss_name in ['point', 'direction', 'trend', 'vol', 'bias', 'lag']:
         loss_value = last_losses.get(loss_name)
         if loss_value is not None:
@@ -174,7 +197,17 @@ def format_loss_log(loss, criterion, args):
             log_parts.append('weights -> {}'.format(', '.join(weight_parts)))
     # ===== 修改结束：dynamic_ema 模式下额外打印当前 batch 的有效权重，便于观察自适应加权行为 =====
     return ' | '.join(log_parts)
-# ===== 修改结束：更新 loss 日志格式化函数，用于展示 baseline 或 feedback 六类分项 =====
+# ===== 修改结束：更新训练日志格式化函数，支持展示监督损失与蒸馏损失 =====
+
+# ===== 修改开始：新增 teacher checkpoint 路径解析，兼容直接传文件或目录 =====
+def resolve_teacher_checkpoint_path(teacher_path):
+    if teacher_path is None or teacher_path == '':
+        return ''
+    resolved_teacher_path = os.path.expanduser(teacher_path)
+    if os.path.isdir(resolved_teacher_path):
+        resolved_teacher_path = os.path.join(resolved_teacher_path, 'checkpoint.pth')
+    return resolved_teacher_path
+# ===== 修改结束：新增 teacher checkpoint 路径解析，兼容直接传文件或目录 =====
 
 mses = []
 maes = []
@@ -213,6 +246,25 @@ for ii in range(args.itr):
     model = HMformer(args, device)
     model.to(device)
     # ===== 修改结束：删除其他模型构造分支，当前训练入口只实例化 HMformer =====
+    # ===== 修改开始：根据 distill_mode 可选加载离线 teacher，默认 none 不影响原训练逻辑 =====
+    teacher_model = None
+    distill_criterion = None
+    resolved_teacher_path = ''
+    distill_enabled = args.distill_mode == 'offline' and args.distill_alpha > 0
+    if distill_enabled:
+        resolved_teacher_path = resolve_teacher_checkpoint_path(args.teacher_path)
+        if resolved_teacher_path == '':
+            raise ValueError('distill_mode=offline 时必须提供 teacher_path 或 teacher checkpoint 目录')
+        if not os.path.exists(resolved_teacher_path):
+            raise FileNotFoundError('teacher checkpoint 不存在: {}'.format(resolved_teacher_path))
+        teacher_model = HMformer(args, device)
+        teacher_model.load_state_dict(torch.load(resolved_teacher_path, map_location=device))
+        teacher_model.to(device)
+        teacher_model.eval()
+        for parameter in teacher_model.parameters():
+            parameter.requires_grad = False
+        distill_criterion = nn.MSELoss()
+    # ===== 修改结束：根据 distill_mode 可选加载离线 teacher，默认 none 不影响原训练逻辑 =====
     # mse, mae = test(model, test_data, test_loader, args, device, ii)
 
     params = model.parameters()
@@ -276,6 +328,15 @@ for ii in range(args.itr):
             print("dynamic config -> ema_beta: {}, weight_tau: {}".format(args.ema_beta, args.weight_tau))
         # ===== 修改结束：打印 feedback 权重模式和 batch EMA 动态加权配置 =====
         # ===== 修改结束：打印完整 feedback loss 的六类权重和 soft lag 配置 =====
+    # ===== 修改开始：打印蒸馏配置，明确当前是否启用 teacher 蒸馏 =====
+    print("distill_mode: {}".format(args.distill_mode))
+    if distill_enabled:
+        print("distill config -> teacher_path: {}, distill_alpha: {}, distill_start_epoch: {}".format(
+            resolved_teacher_path,
+            args.distill_alpha,
+            args.distill_start_epoch
+        ))
+    # ===== 修改结束：打印蒸馏配置，明确当前是否启用 teacher 蒸馏 =====
     print("log_interval: {}".format(args.log_interval))
     print("======================================")
     # ===== 修改结束：打印当前实验配置，明确展示模型、设备、数据长度和 loss 选择 =====
@@ -326,7 +387,18 @@ for ii in range(args.itr):
                 ))
                 shape_logged = True
             # ===== 修改结束：首个 batch 打印输入输出 shape，确认是否为 [B, seq_len, enc_in] 多变量形式 =====
-            loss = criterion(outputs, batch_y)
+            # ===== 修改开始：训练阶段先算监督损失，再按需叠加离线 teacher 输出蒸馏损失 =====
+            supervised_loss = criterion(outputs, batch_y)
+            distill_loss = None
+            if distill_enabled and (epoch + 1) >= args.distill_start_epoch:
+                with torch.no_grad():
+                    teacher_outputs = teacher_model(batch_x, ii)
+                    teacher_outputs = teacher_outputs[:, -args.pred_len:, :]
+                distill_loss = distill_criterion(outputs, teacher_outputs.detach())
+                loss = supervised_loss + args.distill_alpha * distill_loss
+            else:
+                loss = supervised_loss
+            # ===== 修改结束：训练阶段先算监督损失，再按需叠加离线 teacher 输出蒸馏损失 =====
             train_loss.append(loss.item())
 
             # ===== 修改开始：按 log_interval 打印 total/point/direction/trend/vol/bias/lag，最后一个 step 也会打印 =====
@@ -336,7 +408,7 @@ for ii in range(args.itr):
                     i + 1,
                     train_steps,
                     epoch + 1,
-                    format_loss_log(loss, criterion, args)
+                    format_loss_log(loss, supervised_loss, criterion, args, distill_loss=distill_loss)
                 ))
                 speed = (time.time() - time_now) / iter_count
                 left_time = speed * ((args.train_epochs - epoch) * train_steps - i)
