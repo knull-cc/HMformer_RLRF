@@ -6,26 +6,26 @@ set -o pipefail
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
 
 # ===== 修改开始：只运行 HMformer，loss_mode 通过环境变量切换 =====
-loss_mode=${LOSS_MODE:-baseline}
+loss_mode=${LOSS_MODE:-feedback}
 # ===== 修改结束：只运行 HMformer，loss_mode 通过环境变量切换 =====
-# ===== 修改开始：新增自蒸馏环境变量，支持直接关闭或加载离线 teacher =====
-distill_mode=${DISTILL_MODE:-none}
+# ===== 修改开始：新增自蒸馏环境变量，使用安全占位符 __PRED_LEN__ 避免 Bash 默认值解析冲突 =====
+distill_mode=${DISTILL_MODE:-offline}
 teacher_path=${TEACHER_PATH:-}
-teacher_path_template=${TEACHER_PATH_TEMPLATE:-}
+teacher_path_template=${TEACHER_PATH_TEMPLATE:-./checkpoints/ETTh1_96___PRED_LEN___feedback_dynamic_ema_sl336_ll48_pl__PRED_LEN___dm__D_MODEL___nh16_el2_gl3_df__D_FF___ebtimeF_itr0/checkpoint.pth}
 distill_alpha=${DISTILL_ALPHA:-0.1}
 distill_start_epoch=${DISTILL_START_EPOCH:-1}
-# ===== 修改结束：新增自蒸馏环境变量，支持直接关闭或加载离线 teacher =====
+# ===== 修改结束：新增自蒸馏环境变量，使用安全占位符 __PRED_LEN__ 避免 Bash 默认值解析冲突 =====
 # ===== 修改开始：新增 feedback 完整损失的 vol、bias、lag 权重和 soft lag 配置 =====
 lambda_p=${LAMBDA_P:-1.0}
-lambda_d=${LAMBDA_D:-0.1}
-lambda_t=${LAMBDA_T:-0.5}
-lambda_v=${LAMBDA_V:-0.1}
-lambda_b=${LAMBDA_B:-0.1}
-lambda_lag=${LAMBDA_LAG:-0.05}
+lambda_d=${LAMBDA_D:-0.0}
+lambda_t=${LAMBDA_T:-6.0}
+lambda_v=${LAMBDA_V:-0.0}
+lambda_b=${LAMBDA_B:-0.0}
+lambda_lag=${LAMBDA_LAG:-0.0}
 lag_k=${LAG_K:-3}
 lag_tau=${LAG_TAU:-0.1}
 # ===== 修改开始：新增 feedback 静态/动态加权模式配置 =====
-weight_mode=${WEIGHT_MODE:-static}
+weight_mode=${WEIGHT_MODE:-dynamic_ema}
 ema_beta=${EMA_BETA:-0.9}
 weight_tau=${WEIGHT_TAU:-1.0}
 if [ "${loss_mode}" = "baseline" ]; then
@@ -131,14 +131,24 @@ run_etth1() {
   echo "---------- start ETTh1_96_${pred_len}_${exp_suffix} ----------"
   # ===== 修改结束：每个 horizon 开始前打印当前 ETTh1 运行任务，便于对应日志和结果 =====
 
-  # ===== 修改开始：按 pred_len 解析当前 horizon 的 teacher checkpoint 路径，支持单一路径或模板路径 =====
+  # ===== 修改开始：按 pred_len 解析当前 horizon 的 teacher checkpoint 路径，使用 __PRED_LEN__ 安全占位符 =====
   run_teacher_path=${teacher_path}
   if [ -n "${teacher_path_template}" ]; then
-    run_teacher_path=${teacher_path_template//\{pred_len\}/${pred_len}}
+    run_teacher_path=${teacher_path_template//__PRED_LEN__/${pred_len}}
+    run_teacher_path=${run_teacher_path//__D_MODEL__/${d_model:-}}
+    run_teacher_path=${run_teacher_path//__D_FF__/${d_ff:-}}
   fi
-  # ===== 修改结束：按 pred_len 解析当前 horizon 的 teacher checkpoint 路径，支持单一路径或模板路径 =====
+  echo "resolved teacher checkpoint: ${run_teacher_path}"
+  # ===== 修改结束：按 pred_len 解析当前 horizon 的 teacher checkpoint 路径，使用 __PRED_LEN__ 安全占位符 =====
 
-  # ===== 修改开始：调用 main.py 时传入 feedback 完整损失参数，并同步捕获日志用于平均值汇总 =====
+  # ===== 修改开始：蒸馏模式下检查当前 horizon 的 teacher checkpoint 是否真实存在 =====
+  if [ "${distill_mode}" != "none" ] && [ ! -f "${run_teacher_path}" ]; then
+    echo "ERROR: 当前 pred_len=${pred_len} 的 teacher checkpoint 不存在：${run_teacher_path}"
+    exit 1
+  fi
+  # ===== 修改结束：蒸馏模式下检查当前 horizon 的 teacher checkpoint 是否真实存在 =====
+
+  # ===== 修改开始：调用 main.py 时传入 feedback 完整损失和自蒸馏参数，并同步捕获日志用于平均值汇总 =====
   run_log=$(mktemp)
   python -u main.py \
     --root_path ./dataset/ETT-small/ \
@@ -181,7 +191,7 @@ run_etth1() {
   record_result "${pred_len}" "${run_log}"
   rm -f "${run_log}"
 
-  # ===== 修改结束：调用 main.py 时传入 feedback 完整损失参数，并同步捕获日志用于平均值汇总 =====
+  # ===== 修改结束：调用 main.py 时传入 feedback 完整损失和自蒸馏参数，并同步捕获日志用于平均值汇总 =====
 
   # ===== 修改开始：每个 horizon 结束后打印完成提示，便于区分连续四个 ETTh1 实验 =====
   echo "---------- done ETTh1_96_${pred_len}_${exp_suffix} ----------"
